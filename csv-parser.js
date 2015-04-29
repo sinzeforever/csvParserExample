@@ -6,6 +6,7 @@ var fs = require('fs'),
     outputFileName = './import_data',
     treeAry = [[],[],[],[],[],[]] , // since the csv do not specify tree structure, we create tree structure. 2-D array - [layer][treeId] .. level 0 is root
     nodeData = {}, // the node data that will be used as import data
+    lastNode,
     timeframe = "" + Math.floor(Date.now() / 1000),
     taxonomyId = "000003258709",
     treeId = "000003808327",
@@ -60,8 +61,72 @@ var fs = require('fs'),
         return result;
     },
     // append the attribute data of tmp node to previous node
-    appendAttributeByRawNode = function() {
-       
+    appendAttribute = function(node, rawNode) {
+        if (!node || !rawNode || !rawNode['attributeName']) {
+            return;
+        }
+        if (!node.attributes) {
+            node.attributes = {};
+        }
+
+        var attributeName = rawNode['attributeName'],
+            attributeValue,
+            attributeType,
+            attribute,
+            parseAttributeValueString = function(valueStr) { // attribute value is separate by || ; parse it into json array
+                var token = "||",
+                    result = valueStr.split(token);
+
+                // remove empty entries to prevent bug
+                for (var i = 0; i < result.length; i++) {
+                    if (!result[i]) {
+                        result.splice(i, 1);
+                    }
+                }
+                return result;
+            },
+            setAttributeText = function() {
+                attributeType = 'text';
+                attributeValue = {
+                    "max": 20,
+                    "min": 1
+                };
+            },
+            setAttributeCheckBox = function() {
+                attributeType = 'checkbox';
+                attributeValue = parseAttributeValueString(rawNode['attributeValue']);
+            },
+            setAttributeRadioBox = function() {
+                attributeType = 'radiobox';
+                attributeValue = parseAttributeValueString(rawNode['attributeValue']);
+            },
+            checkAttributeType = function() { // function which judge the attribute type and value
+                var inputType = rawNode['attributeType'].toLowerCase();
+                if (inputType == 'checkbox') {
+                    setAttributeCheckBox();
+                } else if (inputType == 'radiobox') {
+                    setAttributeRadioBox();
+                } else if (inputType == 'text') {
+                    setAttributeText();
+                } else if (rawNode['attributeValue'] && rawNode['attributeValue'].search("||") > 0) {
+                    // if value is not empty, we suppose it is checkbox
+                    setAttributeCheckBox();
+                } else {
+                    setAttributeText();
+                }
+            };
+
+        // check attribute to decide type and value
+        checkAttributeType();
+
+        attribute = {
+            "required": false,
+            "searchable": (rawNode['searchable'].toLowerCase() == 'yes' ? true : false),
+            "type": attributeType,
+            "value": attributeValue
+        };
+
+        node.attributes[attributeName] = attribute;
     },
     // get auto increment category id
     // category id can be defined by ourself
@@ -102,7 +167,6 @@ var fs = require('fs'),
         var node =  {
                 "cat_id": (catId ? catId : getNextCategoryId()),
                 "alias_cat_id": null,
-                "attributes": null,
                 "cluster_id": null,
                 "created": timeframe,
                 "cust_data": null,
@@ -125,10 +189,10 @@ var fs = require('fs'),
         return node;
     },
     // create a formal category node, follow the category egs json format
-    createNodeByRawNode = function(tmpNode) {
+    createNodeByRawNode = function(rawNode) {
         var level,
             name,
-            spaceId = tmpNode['spaceId'],
+            spaceId = rawNode['spaceId'],
             currentNode,
             parentName = "root",
             parentNode,
@@ -139,10 +203,10 @@ var fs = require('fs'),
         // we can get the category name of the node and the parent + sibling id from its level
 
         level = 1;
-        name =  tmpNode['l' + level];
+        name =  rawNode['l' + level];
         parentNode = searchNodeInLevel(parentName, level - 1);
 
-        while (tmpNode['l' + (level + 1)]) {
+        while (rawNode['l' + (level + 1)]) {
             // since the csv only record leaf node, we have to generate nodes on the path
             // check if the parent node exist. if not, we create a node for it
             currentNode = searchNodeInLevel(name, level, parentNode.cat_id);
@@ -154,7 +218,7 @@ var fs = require('fs'),
             level += 1;
             parentName = name;
             parentNode = currentNode;
-            name = tmpNode['l' + level];
+            name = rawNode['l' + level];
         }
 
         // create node by the info we got
@@ -162,7 +226,10 @@ var fs = require('fs'),
         if (searchNodeInLevel(name, level, parentNode.cat_id)) {
             return null;
         } else {
+            // normal case, create leaf node
             node = createNode(level, name, spaceId, parentNode.cat_id);
+            // append the attribute info onto the node
+            appendAttribute(node, rawNode);
             node.level = level;
             return node;
         }
@@ -182,14 +249,15 @@ var fs = require('fs'),
         return node;
     },
     parseRow = function(row) {
-        var tmpNode = createRawNodeByRow(row);
+        var rawNode = createRawNodeByRow(row);
 
         // A row can specify a new category node, or just a new attribute of the previous category node
         // if l1~l6 is empty, we consider that a row is for new attribute and we append the attribute to the previous node
-        if (!tmpNode.l1) {
-            // append the attribute to previous node
+        if (!rawNode.l1) {
+            // append the attribute info onto the node
+            appendAttribute(lastNode, rawNode);
         } else { // else we append the node to the data
-            createNodeByRawNode(tmpNode)
+            lastNode = createNodeByRawNode(rawNode)
         }
     },
     makeFinalResult = function() {
@@ -210,7 +278,6 @@ var fs = require('fs'),
 
         // skip first row
         for (var i = 1; i < rowAry.length; i++) {
-       //for (var i = 1; i < 452; i++) {
             parseRow(rowAry[i]);
         }
         makeFinalResult();
